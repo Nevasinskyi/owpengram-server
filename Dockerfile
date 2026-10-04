@@ -85,7 +85,11 @@ COPY --chown=telesrv:telesrv --chmod=0444 deploy/docker/assets/test-server-rsa.p
 COPY --chown=telesrv:telesrv --chmod=0444 deploy/docker/assets/test-server-rsa.pem.b64 /usr/share/telesrv/keys/test-server-rsa.pem.b64
 USER 10001:10001
 
-FROM runtime-base AS admin
+FROM server AS admin
+USER root
+
 COPY --from=build-admin /out/telesrv-admin /usr/local/bin/telesrv-admin
-EXPOSE 2600
-CMD ["telesrv-admin"]
+
+EXPOSE 2398 2400 2401 2599 2600 12399/udp 12400/udp
+
+CMD ["sh", "-c", "telesrv & telesrv-admin & wait"]
