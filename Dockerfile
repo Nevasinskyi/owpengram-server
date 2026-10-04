@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-ARG GO_IMAGE=golang:1.25-alpine
+ARG GO_IMAGE=golang:1.26-alpine
 ARG ALPINE_IMAGE=alpine:3.22
 
 FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS build-base
