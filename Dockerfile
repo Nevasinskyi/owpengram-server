@@ -54,7 +54,8 @@ RUN apk add --no-cache \
     ca-certificates \
     tzdata \
     ffmpeg \
-    openssl
+    openssl \
+    postgresql-client
 
 RUN addgroup -S -g 10001 telesrv \
     && adduser -S -D -H -u 10001 -G telesrv telesrv \
@@ -89,6 +90,30 @@ RUN chmod 0555 \
     /usr/local/bin/telesrv \
     /usr/local/bin/telesrv-admin
 
+
+COPY <<'EOF' /usr/local/bin/reset-migration.sh
+#!/bin/sh
+
+set -e
+
+echo "[migration] Waiting for PostgreSQL..."
+
+until pg_isready -d "$DATABASE_URL" >/dev/null 2>&1; do
+    echo "[migration] PostgreSQL is not ready yet..."
+    sleep 2
+done
+
+echo "[migration] Resetting dirty migration 20260714003108..."
+
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c \
+    "UPDATE schema_migrations SET dirty = false WHERE version = 20260714003108;"
+
+echo "[migration] Migration flag reset successfully."
+EOF
+
+RUN chmod 0555 /usr/local/bin/reset-migration.sh
+
+
 EXPOSE 2398
 EXPOSE 2400
 EXPOSE 2401
@@ -99,4 +124,4 @@ EXPOSE 12400/udp
 
 USER 10001:10001
 
-CMD ["sh", "-c", "telesrv & telesrv-admin & wait"]
+CMD ["sh", "-c", "/usr/local/bin/reset-migration.sh && telesrv & telesrv-admin & wait"]
