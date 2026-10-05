@@ -70,8 +70,6 @@ RUN addgroup -S -g 10001 telesrv \
 COPY deploy/docker/docker-entrypoint.sh \
     /usr/local/bin/telesrv-container-entrypoint
 
-COPY start.sh /usr/local/bin/start.sh
-
 COPY --from=build-server \
     /out/telesrv \
     /usr/local/bin/telesrv
@@ -87,8 +85,7 @@ COPY --chown=telesrv:telesrv \
 RUN chmod 0555 \
     /usr/local/bin/telesrv \
     /usr/local/bin/telesrv-admin \
-    /usr/local/bin/telesrv-container-entrypoint \
-    /usr/local/bin/start.sh
+    /usr/local/bin/telesrv-container-entrypoint
 
 WORKDIR /app
 
@@ -102,4 +99,6 @@ EXPOSE 2600
 EXPOSE 12399/udp
 EXPOSE 12400/udp
 
-ENTRYPOINT ["/usr/local/bin/start.sh"]
+ENTRYPOINT ["/usr/local/bin/telesrv-container-entrypoint"]
+
+CMD ["telesrv"]
