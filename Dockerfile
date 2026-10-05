@@ -7,83 +7,99 @@ ARG TARGETOS
 ARG TARGETARCH
 
 RUN apk add --no-cache ca-certificates git
+
 WORKDIR /src
 
 COPY go.mod go.sum ./
-RUN --mount=type=cache,target=/go/pkg/mod go mod download
+RUN go mod download
 
 COPY cmd/ ./cmd/
 COPY deploy/ ./deploy/
 COPY internal/ ./internal/
+COPY data/ ./data/
 
 ENV CGO_ENABLED=0
 
 FROM build-base AS build-server
+
 ARG VCS_REF=unknown
 ARG VCS_BRANCH=unknown
 ARG VCS_TREE_STATE=unknown
 ARG BUILD_DATE=unknown
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+
+RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath \
-      -ldflags="-s -w -X main.gitCommit=${VCS_REF} -X main.gitBranch=${VCS_BRANCH} -X main.gitTreeState=${VCS_TREE_STATE} -X main.buildTime=${BUILD_DATE}" \
-      -o /out/telesrv ./cmd/telesrv
+    -ldflags="-s -w -X main.gitCommit=${VCS_REF} -X main.gitBranch=${VCS_BRANCH} -X main.gitTreeState=${VCS_TREE_STATE} -X main.buildTime=${BUILD_DATE}" \
+    -o /out/telesrv \
+    ./cmd/telesrv
 
 FROM build-base AS build-admin
+
 RUN apk add --no-cache nodejs npm
+
 WORKDIR /src/cmd/telesrv-admin/web
-RUN --mount=type=cache,target=/root/.npm npm ci && npm run build
+
+RUN npm ci && npm run build
+
 WORKDIR /src
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -trimpath -ldflags="-s -w" -o /out/telesrv-admin ./cmd/telesrv-admin
 
-FROM ${ALPINE_IMAGE} AS runtime-base
+RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath \
+    -ldflags="-s -w" \
+    -o /out/telesrv-admin \
+    ./cmd/telesrv-admin
 
-ARG VCS_REF=unknown
-ARG BUILD_DATE=unknown
+FROM ${ALPINE_IMAGE}
 
-LABEL org.opencontainers.image.title="gramsrv" \
-      org.opencontainers.image.description="Telegram-like MTProto server" \
-      org.opencontainers.image.source="https://github.com/iamxvbaba/gramsrv" \
-      org.opencontainers.image.revision="${VCS_REF}" \
-      org.opencontainers.image.created="${BUILD_DATE}"
+RUN apk add --no-cache \
+    ca-certificates \
+    tzdata \
+    ffmpeg \
+    openssl
 
-RUN apk add --no-cache ca-certificates tzdata \
-    && addgroup -S -g 10001 telesrv \
+RUN addgroup -S -g 10001 telesrv \
     && adduser -S -D -H -u 10001 -G telesrv telesrv \
-    && install -d -o telesrv -g telesrv -m 0750 /app /var/lib/telesrv
+    && install -d -o telesrv -g telesrv -m 0750 \
+       /app \
+       /var/lib/telesrv \
+       /var/lib/telesrv/blobs \
+       /var/lib/telesrv/blob-staging \
+       /var/lib/telesrv/maptiles \
+       /var/lib/telesrv/livestream
 
-COPY --chmod=0555 deploy/docker/docker-entrypoint.sh /usr/local/bin/telesrv-container-entrypoint
+COPY deploy/docker/docker-entrypoint.sh \
+    /usr/local/bin/telesrv-container-entrypoint
+
+COPY start.sh /usr/local/bin/start.sh
+
+COPY --from=build-server \
+    /out/telesrv \
+    /usr/local/bin/telesrv
+
+COPY --from=build-admin \
+    /out/telesrv-admin \
+    /usr/local/bin/telesrv-admin
+
+COPY --chown=telesrv:telesrv \
+    data/langpack/ \
+    /usr/share/telesrv/langpack/
+
+RUN chmod 0555 \
+    /usr/local/bin/telesrv \
+    /usr/local/bin/telesrv-admin \
+    /usr/local/bin/telesrv-container-entrypoint \
+    /usr/local/bin/start.sh
 
 WORKDIR /app
-USER 10001:10001
-ENTRYPOINT ["/usr/local/bin/telesrv-container-entrypoint"]
 
-FROM runtime-base AS server
-USER root
-RUN apk add --no-cache ffmpeg openssl \
-    && install -d -o telesrv -g telesrv -m 0750 \
-      /var/lib/telesrv/blobs \
-      /var/lib/telesrv/blob-staging \
-      /var/lib/telesrv/maptiles \
-      /var/lib/telesrv/livestream
-COPY --from=build-server /out/telesrv /usr/local/bin/telesrv
-COPY --chown=telesrv:telesrv data/langpack/ /usr/share/telesrv/langpack/
-USER 10001:10001
-EXPOSE 2398 2400 2401 2599 12399/udp 12400/udp
-CMD ["telesrv"]
-
-FROM server AS server-test
-USER root
-RUN install -d -o telesrv -g telesrv -m 0755 /usr/share/telesrv/keys
-COPY --chown=telesrv:telesrv --chmod=0444 deploy/docker/assets/test-server-rsa.pub /usr/share/telesrv/keys/test-server-rsa.pub
-COPY --chown=telesrv:telesrv --chmod=0444 deploy/docker/assets/test-server-rsa.pem.b64 /usr/share/telesrv/keys/test-server-rsa.pem.b64
 USER 10001:10001
 
-FROM runtime-base AS admin
-COPY --from=build-admin /out/telesrv-admin /usr/local/bin/telesrv-admin
+EXPOSE 2398
+EXPOSE 2400
+EXPOSE 2401
+EXPOSE 2399
 EXPOSE 2600
-CMD ["telesrv-admin"]
+EXPOSE 12399/udp
+EXPOSE 12400/udp
+
+ENTRYPOINT ["/usr/local/bin/start.sh"]
