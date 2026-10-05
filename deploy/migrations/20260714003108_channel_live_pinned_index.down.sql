@@ -1,1 +1,1 @@
-DROP INDEX CONCURRENTLY IF EXISTS public.channel_messages_live_pinned_idx;
+migrate -path ./migrations -database "$DATABASE_URL" force 20260714003108
