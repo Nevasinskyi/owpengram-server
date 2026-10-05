@@ -97,3 +97,5 @@ case "$command_name" in
 esac
 
 exec "$@"
+
+exec "$@"
