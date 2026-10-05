@@ -99,19 +99,20 @@ set -e
 echo "[migration] Waiting for PostgreSQL..."
 
 until pg_isready -d "$DATABASE_URL" >/dev/null 2>&1; do
+    echo "[migration] PostgreSQL is not ready..."
     sleep 2
 done
 
 echo "[migration] Checking dirty migrations..."
 
 DIRTY_VERSION="$(psql "$DATABASE_URL" -tAc \
-    "SELECT version FROM schema_migrations WHERE dirty = true ORDER BY version DESC LIMIT 1;")"
+    "SELECT version FROM schema_migrations WHERE dirty = true ORDER BY version DESC LIMIT 1;" \
+    | tr -d '[:space:]')"
 
 if [ -z "$DIRTY_VERSION" ]; then
     echo "[migration] No dirty migrations found."
 else
     echo "[migration] Found dirty migration: $DIRTY_VERSION"
-    echo "[migration] Resetting dirty flag..."
 
     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c \
         "UPDATE schema_migrations SET dirty = false WHERE version = $DIRTY_VERSION;"
@@ -119,7 +120,10 @@ else
     echo "[migration] Dirty flag reset successfully."
 fi
 
-exec telesrv
+echo "[migration] Starting telesrv..."
+
+exec /usr/local/bin/telesrv
+EOF
 
 RUN chmod 0555 /usr/local/bin/reset-migration.sh
 
@@ -134,4 +138,4 @@ EXPOSE 12400/udp
 
 USER 10001:10001
 
-CMD ["sh", "-c", "/usr/local/bin/reset-migration.sh && telesrv & telesrv-admin & wait"]
+CMD ["/usr/local/bin/reset-migration.sh"]
