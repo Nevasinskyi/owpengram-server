@@ -89,7 +89,3 @@ FROM runtime-base AS admin
 COPY --from=build-admin /out/telesrv-admin /usr/local/bin/telesrv-admin
 EXPOSE 2600
 CMD ["telesrv-admin"]
-
-USER 10001:10001
-
-CMD ["/usr/local/bin/reset-migration.sh"]
