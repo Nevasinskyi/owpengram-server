@@ -1,140 +1,94 @@
-ARG GO_IMAGE=golang:1.25-alpine
-ARG ALPINE_IMAGE=alpine:3.22
+# syntax=docker/dockerfile:1.7
 
-FROM ${GO_IMAGE} AS build-base
+ARG GO_IMAGE=golang:1.25-alpine@sha256:1ae0735f00daffa3aaf1363a5184c0d2dc55c78e3db4ec70241cdac97bf84b59
+ARG ALPINE_IMAGE=alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
+
+FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS build-base
+
+ARG TARGETOS
+ARG TARGETARCH
 
 RUN apk add --no-cache ca-certificates git
-
 WORKDIR /src
 
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
 
 COPY cmd/ ./cmd/
 COPY deploy/ ./deploy/
 COPY internal/ ./internal/
-COPY data/ ./data/
 
+ENV CGO_ENABLED=0
 
 FROM build-base AS build-server
-
-ENV CGO_ENABLED=0
-
-RUN go build \
-    -p 1 \
-    -trimpath \
-    -ldflags="-s -w" \
-    -o /out/telesrv \
-    ./cmd/telesrv
-
+ARG VCS_REF=unknown
+ARG VCS_BRANCH=unknown
+ARG VCS_TREE_STATE=unknown
+ARG BUILD_DATE=unknown
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath \
+      -ldflags="-s -w -X main.gitCommit=${VCS_REF} -X main.gitBranch=${VCS_BRANCH} -X main.gitTreeState=${VCS_TREE_STATE} -X main.buildTime=${BUILD_DATE}" \
+      -o /out/telesrv ./cmd/telesrv
 
 FROM build-base AS build-admin
-
 RUN apk add --no-cache nodejs npm
-
 WORKDIR /src/cmd/telesrv-admin/web
-
-RUN npm ci && npm run build
-
+RUN --mount=type=cache,target=/root/.npm npm ci && npm run build
 WORKDIR /src
-
-ENV CGO_ENABLED=0
-
-RUN go build \
-    -p 1 \
-    -trimpath \
-    -ldflags="-s -w" \
-    -o /out/telesrv-admin \
-    ./cmd/telesrv-admin
-
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w" -o /out/telesrv-admin ./cmd/telesrv-admin
 
 FROM ${ALPINE_IMAGE} AS runtime-base
 
-RUN apk add --no-cache \
-    ca-certificates \
-    tzdata \
-    ffmpeg \
-    openssl \
-    postgresql-client
+ARG VCS_REF=unknown
+ARG BUILD_DATE=unknown
 
-RUN addgroup -S -g 10001 telesrv \
+LABEL org.opencontainers.image.title="gramsrv" \
+      org.opencontainers.image.description="Telegram-like MTProto server" \
+      org.opencontainers.image.source="https://github.com/iamxvbaba/gramsrv" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.created="${BUILD_DATE}"
+
+RUN apk add --no-cache ca-certificates tzdata \
+    && addgroup -S -g 10001 telesrv \
     && adduser -S -D -H -u 10001 -G telesrv telesrv \
-    && install -d -o telesrv -g telesrv -m 0750 \
-       /app \
-       /var/lib/telesrv \
-       /var/lib/telesrv/blobs \
-       /var/lib/telesrv/blob-staging \
-       /var/lib/telesrv/maptiles \
-       /var/lib/telesrv/livestream
+    && install -d -o telesrv -g telesrv -m 0750 /app /var/lib/telesrv
 
-COPY deploy/docker/docker-entrypoint.sh \
-    /usr/local/bin/telesrv-container-entrypoint
-
-RUN chmod 0555 /usr/local/bin/telesrv-container-entrypoint
+COPY --chmod=0555 deploy/docker/docker-entrypoint.sh /usr/local/bin/telesrv-container-entrypoint
 
 WORKDIR /app
+USER 10001:10001
+ENTRYPOINT ["/usr/local/bin/telesrv-container-entrypoint"]
 
+FROM runtime-base AS server
+USER root
+RUN apk add --no-cache ffmpeg openssl \
+    && install -d -o telesrv -g telesrv -m 0750 \
+      /var/lib/telesrv/blobs \
+      /var/lib/telesrv/blob-staging \
+      /var/lib/telesrv/maptiles \
+      /var/lib/telesrv/livestream
+COPY --from=build-server /out/telesrv /usr/local/bin/telesrv
+COPY --chown=telesrv:telesrv data/langpack/ /usr/share/telesrv/langpack/
+USER 10001:10001
+EXPOSE 2398 2400 2401 2599 12399/udp 12400/udp
+CMD ["telesrv"]
 
-FROM runtime-base AS blitz
+FROM server AS server-test
+USER root
+RUN install -d -o telesrv -g telesrv -m 0755 /usr/share/telesrv/keys
+COPY --chown=telesrv:telesrv --chmod=0444 deploy/docker/assets/test-server-rsa.pub /usr/share/telesrv/keys/test-server-rsa.pub
+COPY --chown=telesrv:telesrv --chmod=0444 deploy/docker/assets/test-server-rsa.pem.b64 /usr/share/telesrv/keys/test-server-rsa.pem.b64
+USER 10001:10001
 
-COPY --from=build-server /out/telesrv \
-    /usr/local/bin/telesrv
-
-COPY --from=build-admin /out/telesrv-admin \
-    /usr/local/bin/telesrv-admin
-
-COPY data/langpack/ \
-    /usr/share/telesrv/langpack/
-
-RUN chmod 0555 \
-    /usr/local/bin/telesrv \
-    /usr/local/bin/telesrv-admin
-
-
-COPY <<'EOF' /usr/local/bin/reset-migration.sh
-#!/bin/sh
-
-set -e
-
-echo "[migration] Waiting for PostgreSQL..."
-
-until pg_isready -d "$DATABASE_URL" >/dev/null 2>&1; do
-    echo "[migration] PostgreSQL is not ready..."
-    sleep 2
-done
-
-echo "[migration] Checking dirty migrations..."
-
-DIRTY_VERSION="$(psql "$DATABASE_URL" -tAc \
-    "SELECT version FROM schema_migrations WHERE dirty = true ORDER BY version DESC LIMIT 1;" \
-    | tr -d '[:space:]')"
-
-if [ -z "$DIRTY_VERSION" ]; then
-    echo "[migration] No dirty migrations found."
-else
-    echo "[migration] Found dirty migration: $DIRTY_VERSION"
-
-    psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c \
-        "UPDATE schema_migrations SET dirty = false WHERE version = $DIRTY_VERSION;"
-
-    echo "[migration] Dirty flag reset successfully."
-fi
-
-echo "[migration] Starting telesrv..."
-
-exec /usr/local/bin/telesrv
-EOF
-
-RUN chmod 0555 /usr/local/bin/reset-migration.sh
-
-
-EXPOSE 2398
-EXPOSE 2400
-EXPOSE 2401
-EXPOSE 2599
+FROM runtime-base AS admin
+COPY --from=build-admin /out/telesrv-admin /usr/local/bin/telesrv-admin
 EXPOSE 2600
-EXPOSE 12399/udp
-EXPOSE 12400/udp
+CMD ["telesrv-admin"]
 
 USER 10001:10001
 
